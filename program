@@ -1,0 +1,117 @@
+const byte ENCODER_A = 2;  // Hardware Interrupt 0
+const byte ENCODER_B = 5;  // Secondary Encoder Channel
+
+const byte TRIG_PIN = 3;   // HC-SR04 Ultrasonic Trigger
+const byte ECHO_PIN = 4;   // HC-SR04 Ultrasonic Echo
+
+const byte ENA = 9;        // L293D Enable (PWM Speed Pin)
+const byte IN1 = 10;       // Driver Input 1
+const byte IN2 = 6;        // Driver Input 2
+
+
+const float PPR = 432.0;   // Adjusted PPR for precise Tinkercad motor scaling
+const float Kp = 0.15;     // Smoothed Proportional Gain
+
+float targetRPM = 150.0;   
+float currentRPM = 0.0;
+int pwmOutput = 100;       
+
+volatile long pulseCount = 0;
+unsigned long lastTime = 0;
+
+void encoderISR() {
+  pulseCount++;
+}
+
+float getDistanceCM() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(5);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  long duration = pulseIn(ECHO_PIN, HIGH, 60000); 
+  
+  if (duration == 0) {
+    return 200.0;
+  }
+  
+  return (duration * 0.0343) / 2.0;
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(ENCODER_A, INPUT_PULLUP);
+  pinMode(ENCODER_B, INPUT_PULLUP);
+  
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  attachInterrupt(digitalPinToInterrupt(ENCODER_A), encoderISR, RISING);
+
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, pwmOutput);
+
+  Serial.println("==================================================");
+  Serial.println("  Automated Conveyor Belt Closed-Loop System Ready ");
+  Serial.println("==================================================");
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  if (currentTime - lastTime >= 200) {
+    
+    // 1. Read Proximity Distance
+    float objectDistance = getDistanceCM();
+
+    // 2. Set Target RPM based on Proximity
+    if (objectDistance < 15.0) {
+      targetRPM = 60.0;   
+    } else {
+      targetRPM = 150.0;  
+    }
+
+    // 3. Thread-Safe Pulse Count Extraction
+    noInterrupts();
+    long pulses = pulseCount;
+    pulseCount = 0;
+    interrupts();
+
+    // 4. Calculate Speed (RPM)
+    float timeElapsedSec = (currentTime - lastTime) / 1000.0;
+    float revolutions = pulses / PPR;
+    currentRPM = (revolutions / timeElapsedSec) * 60.0;
+
+    // 5. Closed-Loop Regulation Logic
+    float error = targetRPM - currentRPM;
+    
+    // Proportional correction
+    pwmOutput += (int)(Kp * error); 
+    
+    // Allow lower bound to drop to 0 so the controller can reduce speed fully
+    pwmOutput = constrain(pwmOutput, 0, 255);
+
+    analogWrite(ENA, pwmOutput);
+
+    // 6. Serial Telemetry Output
+    Serial.print("Dist: "); 
+    Serial.print(objectDistance, 1); 
+    Serial.print(" cm | Target RPM: "); 
+    Serial.print(targetRPM, 1);
+    Serial.print(" | Actual RPM: "); 
+    Serial.print(currentRPM, 1);
+    Serial.print(" | Error: "); 
+    Serial.print(error, 1);
+    Serial.print(" | Adjusted PWM: "); 
+    Serial.println(pwmOutput);
+
+    lastTime = currentTime;
+  }
+}
